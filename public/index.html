@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SealSimulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="brand" data-tab="play" aria-label="SealSimulator home"><span class="brand-dot"></span>SealSimulator</button>
+      <nav class="nav" aria-label="Main navigation">
+        <button class="nav-btn active" data-tab="play">Play</button>
+        <button class="nav-btn" data-tab="upgrades">Upgrades</button>
+        <button class="nav-btn" data-tab="cosmetics">Cosmetics</button>
+        <button class="nav-btn" data-tab="ranked">Ranked</button>
+        <button class="nav-btn" data-tab="profile">Profile</button>
+      </nav>
+      <div class="header-actions">
+        <div class="pill"><span>FLOPS</span><strong id="flops">0</strong></div>
+        <button class="icon-btn" id="soundToggle" title="Toggle sound">Sound</button>
+        <button class="icon-btn" id="musicToggle" title="Toggle music">Music</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="view active" id="playView">
+        <div class="hero-copy">
+          <div class="eyebrow" id="levelLabel">LEVEL 1 SEAL</div>
+          <h1>CLICK THE SEAL</h1>
+          <p>Build your combo. Earn FLOPS. Evolve your seal.</p>
+        </div>
+        <div class="play-layout">
+          <aside class="side-card stats-card">
+            <span class="muted">Current run</span>
+            <div class="big-stat" id="runClicks">0</div>
+            <span class="muted">clicks</span>
+            <div class="stat-row"><span>Combo</span><strong id="combo">0</strong></div>
+            <div class="stat-row"><span>CPS</span><strong id="cps">0.0</strong></div>
+            <div class="stat-row"><span>Best combo</span><strong id="bestCombo">0</strong></div>
+          </aside>
+
+          <div class="seal-stage">
+            <div class="combo-pop" id="comboPop">+1</div>
+            <button class="seal-button" id="sealButton" aria-label="Click seal">
+              <div class="cosmetic-layer" id="cosmeticLayer"></div>
+              <img src="/assets/seal.png" alt="Seal" id="sealImage" draggable="false">
+            </button>
+            <div class="stage-caption">One click. One more FLOP.</div>
+          </div>
+
+          <aside class="side-card progress-card">
+            <span class="muted">Next seal</span>
+            <div class="evolve-name" id="nextSeal">Level 2</div>
+            <div class="bar"><span id="levelProgress"></span></div>
+            <div class="progress-copy"><span id="progressText">0 / 200 FLOPS</span><strong id="evolveCost">200</strong></div>
+            <button class="primary-btn" id="evolveBtn">Evolve Seal</button>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="upgradesView">
+        <div class="section-head"><div><div class="eyebrow">UPGRADE LAB</div><h2>Make every click matter.</h2></div><div class="pill"><span>FLOPS</span><strong id="flops2">0</strong></div></div>
+        <div class="upgrade-grid" id="upgradeGrid"></div>
+      </section>
+
+      <section class="view" id="cosmeticsView">
+        <div class="section-head"><div><div class="eyebrow">CUSTOMIZATION</div><h2>Keep the seal simple. Keep the style yours.</h2></div></div>
+        <div class="cosmetics-layout"><div class="cosmetic-preview card"><div class="preview-label">PREVIEW</div><div class="preview-stage"><div class="preview-seal"><div class="cosmetic-layer" id="previewCosmeticLayer"></div><img src="/assets/seal.png" alt="Seal preview"></div></div></div><div class="cosmetic-list" id="cosmeticList"></div></div>
+      </section>
+
+      <section class="view" id="rankedView">
+        <div class="section-head"><div><div class="eyebrow">REAL PLAYER COMPETITION</div><h2>Ranked battles.</h2></div><div class="rank-badge" id="rankBadge">BRONZE</div></div>
+        <div class="ranked-grid">
+          <div class="card ranked-card"><div class="rank-icon" id="rankIcon">B</div><div><div class="muted">Your rank</div><h3 id="rankName">Bronze</h3><p id="rankElo">0 rating</p></div><button class="primary-btn wide" id="rankQueueBtn">Find real player</button><button class="ghost-btn wide" id="rankCancelBtn" hidden>Cancel search</button><div class="search-state" id="searchState">No bots. No practice queue. Only real connected players.</div></div>
+          <div class="card friend-card"><div class="muted">Private battle</div><h3>Play with a friend</h3><p>Create a private room or join one using a five-character code.</p><div class="friend-actions"><button class="secondary-btn" id="createRoomBtn">Create room</button><div class="join-row"><input id="roomCode" maxlength="5" placeholder="CODE"><button class="secondary-btn" id="joinRoomBtn">Join</button></div></div><div class="room-code" id="createdCode" hidden></div></div>
+        </div>
+        <div class="card leaderboard-card"><div class="section-head compact"><div><div class="eyebrow">LIVE</div><h3>Leaderboard</h3></div><button class="ghost-btn" id="refreshLeaderboard">Refresh</button></div><div id="leaderboardRows" class="leaderboard-rows"><div class="empty">Connect to the server to see live players.</div></div></div>
+      </section>
+
+      <section class="view" id="profileView">
+        <div class="section-head"><div><div class="eyebrow">PROFILE</div><h2>Your seal record.</h2></div></div>
+        <div class="profile-grid"><div class="card profile-main"><label for="playerName">Player name</label><input id="playerName" maxlength="18" placeholder="Your name"><button class="primary-btn" id="saveNameBtn">Save profile</button></div><div class="card record-card"><div><span class="muted">All-time clicks</span><strong id="totalClicks">0</strong></div><div><span class="muted">Best CPS</span><strong id="bestCps">0.0</strong></div><div><span class="muted">Rank wins</span><strong id="rankWins">0</strong></div></div></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="battle-modal" id="battleModal" hidden>
+    <div class="battle-backdrop"></div><div class="battle-panel card"><div class="battle-top"><div><div class="eyebrow" id="battleMode">RANKED BATTLE</div><h2 id="opponentName">Opponent</h2></div><div class="timer" id="battleTimer">30.0</div></div><div class="versus"><div class="battle-score"><span id="youName">You</span><strong id="youScore">0</strong></div><div class="vs">VS</div><div class="battle-score"><span id="enemyName">Opponent</span><strong id="enemyScore">0</strong></div></div><button class="battle-seal" id="battleSeal"><img src="/assets/seal.png" alt="Seal"></button><div class="battle-tip">Click your seal as fast as you can.</div></div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
