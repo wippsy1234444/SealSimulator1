@@ -1,333 +1,74 @@
-const path = require('path');
-const http = require('http');
-const crypto = require('crypto');
-const express = require('express');
-const { Server } = require('socket.io');
-const { Pool } = require('pg');
+const path=require('path');
+const http=require('http');
+const express=require('express');
+const cookieParser=require('cookie-parser');
+const bcrypt=require('bcryptjs');
+const jwt=require('jsonwebtoken');
+const {Pool}=require('pg');
+const {Server}=require('socket.io');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: false } });
-const PORT = Number(process.env.PORT || 3000);
-const SESSION_DAYS = 14;
-const SESSION_MAX_AGE = SESSION_DAYS * 24 * 60 * 60 * 1000;
+const app=express();
+const server=http.createServer(app);
+const io=new Server(server,{cors:{origin:true,credentials:true}});
+app.use(express.json({limit:'1mb'}));
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname,'public')));
 
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+const PORT=process.env.PORT||10000;
+const JWT_SECRET=process.env.JWT_SECRET||'change-this-in-render';
+if(!process.env.JWT_SECRET) console.warn('JWT_SECRET is not set. Set it in Render Environment Variables.');
+const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL?{rejectUnauthorized:false}:false});
+const memoryMode=!process.env.DATABASE_URL;
+const users=new Map(); const sessions=new Map(); const friends=new Map(); const messages=[]; const presence=new Map(); const queue=[]; const rooms=new Map();
 
-const ranks = [
-  { name: 'Bronze', min: 0 }, { name: 'Silver', min: 100 }, { name: 'Gold', min: 300 },
-  { name: 'Platinum', min: 650 }, { name: 'Diamond', min: 1200 }, { name: 'Master', min: 2200 }
-];
-
-const memory = {
-  users: new Map(), sessions: new Map(), leaderboard: new Map(), players: new Map(),
-  activeSockets: new Map(), queue: [], rooms: new Map(), chatGlobal: [], chatPrivate: {}
-};
-
-let pool = null;
-let dbReady = false;
-
-function hasDb() { return !!process.env.DATABASE_URL && !!pool; }
-function cookieSecure() { return process.env.NODE_ENV === 'production'; }
-function setSessionCookie(res, token) {
-  const parts = [`seal_session=${encodeURIComponent(token)}`, 'Path=/', `Max-Age=${Math.floor(SESSION_MAX_AGE / 1000)}`, 'HttpOnly', 'SameSite=Lax'];
-  if (cookieSecure()) parts.push('Secure');
-  res.setHeader('Set-Cookie', parts.join('; '));
+async function q(text,params=[]){ if(memoryMode) return {rows:[]}; return pool.query(text,params); }
+async function init(){
+ if(memoryMode){console.log('DATABASE_URL missing: temporary memory mode'); return;}
+ await q(`CREATE TABLE IF NOT EXISTS users(id SERIAL PRIMARY KEY, username VARCHAR(20) UNIQUE NOT NULL, password_hash TEXT NOT NULL, flops BIGINT DEFAULT 0, xp INT DEFAULT 0, level INT DEFAULT 1, rating INT DEFAULT 0, clicks BIGINT DEFAULT 0, prestige INT DEFAULT 0, cosmetics JSONB DEFAULT '{}'::jsonb, upgrades JSONB DEFAULT '{}'::jsonb, streak INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), last_seen TIMESTAMPTZ DEFAULT NOW());`);
+ await q(`CREATE TABLE IF NOT EXISTS friendships(id SERIAL PRIMARY KEY, user_id INT REFERENCES users(id) ON DELETE CASCADE, friend_id INT REFERENCES users(id) ON DELETE CASCADE, status VARCHAR(12) NOT NULL, UNIQUE(user_id,friend_id));`);
+ await q(`CREATE TABLE IF NOT EXISTS global_messages(id BIGSERIAL PRIMARY KEY, user_id INT REFERENCES users(id) ON DELETE CASCADE, message TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());`);
+ await q(`CREATE TABLE IF NOT EXISTS private_messages(id BIGSERIAL PRIMARY KEY, sender_id INT REFERENCES users(id) ON DELETE CASCADE, receiver_id INT REFERENCES users(id) ON DELETE CASCADE, message TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());`);
 }
-function clearSessionCookie(res) {
-  const parts = ['seal_session=', 'Path=/', 'Max-Age=0', 'HttpOnly', 'SameSite=Lax'];
-  if (cookieSecure()) parts.push('Secure');
-  res.setHeader('Set-Cookie', parts.join('; '));
+function tokenFor(u){return jwt.sign({id:u.id,username:u.username},JWT_SECRET,{expiresIn:'30d'});}
+async function getUser(id){
+ if(memoryMode) return users.get(Number(id));
+ const r=await q('SELECT * FROM users WHERE id=$1',[id]); return r.rows[0];
 }
-function getCookie(req, name) {
-  const raw = req.headers.cookie || '';
-  for (const part of raw.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
-  }
-  return '';
+async function auth(req,res,next){
+ try{const t=req.cookies.ss_token;if(!t) return res.status(401).json({error:'auth'}); const p=jwt.verify(t,JWT_SECRET); const u=await getUser(p.id); if(!u) throw 0; req.user=u; next();}catch(e){res.status(401).json({error:'auth'});}
 }
-function randomToken() { return crypto.randomBytes(32).toString('hex'); }
-function tokenHash(token) { return crypto.createHash('sha256').update(token).digest('hex'); }
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-  return `${salt.toString('hex')}:${hash.toString('hex')}`;
-}
-function verifyPassword(password, stored) {
-  const [saltHex, hashHex] = String(stored || '').split(':');
-  if (!saltHex || !hashHex) return false;
-  try {
-    const salt = Buffer.from(saltHex, 'hex');
-    const expected = Buffer.from(hashHex, 'hex');
-    const actual = crypto.scryptSync(password, salt, expected.length, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    return crypto.timingSafeEqual(actual, expected);
-  } catch { return false; }
-}
-function normalizeName(name) { return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 18); }
-function validName(name) { return /^[A-Za-z0-9 _-]{3,18}$/.test(name); }
-function normalizeEmail(email) { return String(email || '').trim().toLowerCase().slice(0, 160); }
-function makeFriendCode() { const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({length:8},()=>chars[Math.floor(Math.random()*chars.length)]).join(''); }
-function cleanChat(text){ return String(text||'').replace(/\s+/g,' ').trim().slice(0,500); }
-function friendPairKey(a,b){ return [a,b].sort().join(':'); }
-function isOnlineUser(id){ return memory.activeSockets.has(id); }
-function validPassword(password) { return typeof password === 'string' && password.length >= 8 && password.length <= 128; }
-function rankFor(elo) { return ranks.slice().reverse().find(r => elo >= r.min) || ranks[0]; }
-function profileEntry(state) {
-  const rank = rankFor(state.elo);
-  return { id: state.id, name: state.name, elo: state.elo, rank: rank.name, clicks: state.totalClicks, online: true };
-}
-function defaultState(name) {
-  return { flops: 0, totalClicks: 0, level: 1, runClicks: 0, combo: 0, bestCombo: 0, bestCps: 0,
-    rankWins: 0, rankLosses: 0, elo: 0, name, prestige: 0, streak: 0, lastDaily: 0, missionClicks: 0,
-    weeklyWins: 0, owned: ['none'], equipped: 'none', upgrades: { power:0, mult:0, crit:0, combo:0, lucky:0, bank:0 }, history: [] };
-}
-function cleanState(input, fallbackName) {
-  const base = defaultState(fallbackName);
-  const src = (input && typeof input === 'object') ? input : {};
-  const out = { ...base };
-  for (const key of Object.keys(base)) {
-    if (key === 'name') continue;
-    if (key === 'upgrades') out.upgrades = { ...base.upgrades, ...(src.upgrades || {}) };
-    else if (key === 'owned') out.owned = Array.isArray(src.owned) ? [...new Set(src.owned.map(String).slice(0, 50))] : base.owned;
-    else if (key === 'history') out.history = Array.isArray(src.history) ? src.history.slice(0, 20) : [];
-    else if (typeof src[key] === 'number' && Number.isFinite(src[key])) out[key] = Math.max(0, Math.floor(src[key]));
-    else if (typeof src[key] === 'string') out[key] = src[key].slice(0, 64);
-    else if (typeof src[key] === 'boolean') out[key] = src[key];
-  }
-  // Server identity fields are authoritative.
-  out.name = fallbackName;
-  out.elo = Math.min(out.elo, 1000000);
-  out.prestige = Math.min(out.prestige, 1000);
-  return out;
+function rankName(r){ if(r<400)return 'Bronze'; if(r<800)return 'Silver'; if(r<1200)return 'Gold'; if(r<1700)return 'Platinum'; if(r<2300)return 'Diamond'; return 'Master'; }
+function pubUser(u){return {id:u.id,username:u.username,rank:rankName(Number(u.rating||0)),rating:Number(u.rating||0),level:Number(u.level||1),flops:Number(u.flops||0),prestige:Number(u.prestige||0)};}
+async function saveProgress(u,data){
+ const allowed=['flops','xp','level','rating','clicks','prestige','cosmetics','upgrades','streak'];
+ if(memoryMode){Object.assign(u,Object.fromEntries(allowed.filter(k=>data[k]!==undefined).map(k=>[k,data[k]]))); return pubUser(u);}
+ const set=[]; const vals=[]; let i=1; for(const k of allowed){if(data[k]!==undefined){set.push(`${k}=$${i++}`); vals.push(data[k]);}} if(!set.length)return pubUser(u); vals.push(u.id); const r=await q(`UPDATE users SET ${set.join(',')}, last_seen=NOW() WHERE id=$${i} RETURNING *`,vals); return pubUser(r.rows[0]);
 }
 
-async function initDb() {
-  if (!process.env.DATABASE_URL) {
-    console.warn('DATABASE_URL is not set. Auth/progress will use temporary in-memory storage. Add a Render Postgres database for persistence.');
-    return;
-  }
-  pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-  await pool.query(`CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username VARCHAR(18) NOT NULL UNIQUE,
-    username_key VARCHAR(18) NOT NULL UNIQUE,
-    email VARCHAR(160),
-    password_hash TEXT NOT NULL,
-    game_state JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  )`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS sessions (
-    token_hash CHAR(64) PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TIMESTAMPTZ NOT NULL
-  )`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at)`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS friend_code VARCHAR(10)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_friend_code_idx ON users(friend_code)`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS friendships (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, friend_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(user_id, friend_id))`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS friend_requests (id TEXT PRIMARY KEY, from_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, to_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status VARCHAR(12) NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS friend_requests_to_idx ON friend_requests(to_user, status)`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS chat_messages (id BIGSERIAL PRIMARY KEY, kind VARCHAR(10) NOT NULL, sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, recipient_id TEXT REFERENCES users(id) ON DELETE CASCADE, body VARCHAR(500) NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS chat_messages_global_idx ON chat_messages(kind, created_at DESC)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS chat_messages_private_idx ON chat_messages(sender_id, recipient_id, created_at DESC)`);
-  const missing = await pool.query(`SELECT id FROM users WHERE friend_code IS NULL OR friend_code='' LIMIT 500`);
-  for (const row of missing.rows) {
-    let code='';
-    for(let tries=0;tries<30;tries++){ code=makeFriendCode(); const exists=await pool.query('SELECT 1 FROM users WHERE friend_code=$1',[code]); if(!exists.rowCount) break; }
-    await pool.query("UPDATE users SET friend_code=$2 WHERE id=$1 AND (friend_code IS NULL OR friend_code='')",[row.id,code]);
-  }
-  dbReady = true;
-  console.log('Postgres database ready.');
-}
+app.get('/api/me',auth,async(req,res)=>res.json({user:pubUser(req.user),rank:rankName(Number(req.user.rating||0))}));
+app.post('/api/register',async(req,res)=>{const username=String(req.body.username||'').trim(); const password=String(req.body.password||''); if(!/^[A-Za-z0-9_]{3,20}$/.test(username)||password.length<6)return res.status(400).json({error:'Use 3-20 letters/numbers/_ and a password of 6+ characters.'}); const hash=await bcrypt.hash(password,12); try{ if(memoryMode){for(const u of users.values())if(u.username.toLowerCase()===username.toLowerCase())throw {code:'23505'}; const id=users.size+1; const u={id,username,password_hash:hash,flops:0,xp:0,level:1,rating:0,clicks:0,prestige:0,streak:0,cosmetics:{},upgrades:{}}; users.set(id,u); res.cookie('ss_token',tokenFor(u),{httpOnly:true,sameSite:'lax'}); return res.json({user:pubUser(u)});} const r=await q('INSERT INTO users(username,password_hash) VALUES($1,$2) RETURNING *',[username,hash]); const u=r.rows[0]; res.cookie('ss_token',tokenFor(u),{httpOnly:true,sameSite:'lax'}); res.json({user:pubUser(u)});}catch(e){res.status(e.code==='23505'?409:500).json({error:e.code==='23505'?'That profile name is already taken.':'Registration failed.'});}});
+app.post('/api/login',async(req,res)=>{const username=String(req.body.username||'').trim(); const password=String(req.body.password||''); let u;if(memoryMode){u=[...users.values()].find(x=>x.username.toLowerCase()===username.toLowerCase());}else{const r=await q('SELECT * FROM users WHERE LOWER(username)=LOWER($1)',[username]);u=r.rows[0];} if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Wrong username or password.'}); res.cookie('ss_token',tokenFor(u),{httpOnly:true,sameSite:'lax'}); res.json({user:pubUser(u)});});
+app.post('/api/logout',auth,(req,res)=>{res.clearCookie('ss_token');res.json({ok:true});});
+app.post('/api/progress',auth,async(req,res)=>res.json({user:await saveProgress(req.user,req.body||{})}));
+app.get('/api/leaderboard',async(req,res)=>{if(memoryMode)return res.json({players:[...users.values()].sort((a,b)=>b.rating-a.rating).slice(0,50).map(pubUser)});const r=await q('SELECT * FROM users ORDER BY rating DESC, clicks DESC LIMIT 50');res.json({players:r.rows.map(pubUser)});});
+app.get('/api/chat/global',async(req,res)=>{if(memoryMode)return res.json({messages:messages.slice(-100)});const r=await q(`SELECT g.id,g.message,g.created_at,u.username,u.rating,u.level FROM global_messages g JOIN users u ON u.id=g.user_id ORDER BY g.id DESC LIMIT 100`);res.json({messages:r.rows.reverse().map(x=>({id:x.id,username:x.username,rank:rankName(x.rating),level:x.level,message:x.message,createdAt:x.created_at,online:presence.has(String(x.username).toLowerCase())}))});});
+app.get('/api/friends',auth,async(req,res)=>{if(memoryMode){const ids=[...(friends.get(req.user.id)||[])];return res.json({friends:ids.map(id=>pubUser(users.get(id))).filter(Boolean).map(x=>({...x,online:presence.has(x.username.toLowerCase())}))});} const r=await q(`SELECT u.* FROM friendships f JOIN users u ON u.id=f.friend_id WHERE f.user_id=$1 AND f.status='accepted' ORDER BY u.username`,[req.user.id]);res.json({friends:r.rows.map(x=>({...pubUser(x),online:presence.has(x.username.toLowerCase())}))});});
+app.post('/api/friends/add',auth,async(req,res)=>{const code=String(req.body.username||'').trim(); let other;if(memoryMode)other=[...users.values()].find(x=>x.username.toLowerCase()===code.toLowerCase());else{const r=await q('SELECT * FROM users WHERE LOWER(username)=LOWER($1)',[code]);other=r.rows[0];} if(!other||other.id===req.user.id)return res.status(400).json({error:'Player not found.'}); if(memoryMode){let s=friends.get(req.user.id)||new Set();s.add(other.id);friends.set(req.user.id,s); return res.json({ok:true});} await q(`INSERT INTO friendships(user_id,friend_id,status) VALUES($1,$2,'accepted') ON CONFLICT(user_id,friend_id) DO UPDATE SET status='accepted'`,[req.user.id,other.id]); await q(`INSERT INTO friendships(user_id,friend_id,status) VALUES($1,$2,'accepted') ON CONFLICT(user_id,friend_id) DO UPDATE SET status='accepted'`,[other.id,req.user.id]);res.json({ok:true});});
+app.get('/api/private/:username',auth,async(req,res)=>{const n=req.params.username;if(memoryMode)return res.json({messages:messages.filter(m=>(m.a===req.user.username&&m.b===n)||(m.b===req.user.username&&m.a===n)).slice(-100)});const r=await q(`SELECT p.id,p.message,p.created_at,s.username sender,r.username receiver,s.rating sender_rating,r.rating receiver_rating FROM private_messages p JOIN users s ON s.id=p.sender_id JOIN users r ON r.id=p.receiver_id WHERE (p.sender_id=$1 AND p.receiver_id=(SELECT id FROM users WHERE username=$2)) OR (p.receiver_id=$1 AND p.sender_id=(SELECT id FROM users WHERE username=$2)) ORDER BY p.id DESC LIMIT 100`,[req.user.id,n]);res.json({messages:r.rows.reverse().map(x=>({id:x.id,message:x.message,createdAt:x.created_at,sender:x.sender,senderRank:rankName(x.sender_rating)}))});});
+app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 
-async function getUserById(id) {
-  if (!id) return null;
-  if (!hasDb()) return memory.users.get(id) || null;
-  const r = await pool.query('SELECT id, username, username_key, email, password_hash, game_state, friend_code FROM users WHERE id=$1', [id]);
-  return r.rows[0] || null;
-}
-async function getUserByNameKey(key) {
-  if (!hasDb()) return memory.users.get(key) || null;
-  const r = await pool.query('SELECT id, username, username_key, email, password_hash, game_state, friend_code FROM users WHERE username_key=$1', [key]);
-  return r.rows[0] || null;
-}
-async function insertUser({ username, usernameKey, email, passwordHash, gameState, friendCode }) {
-  if (!hasDb()) {
-    const id = crypto.randomUUID();
-    const user = { id, username, username_key: usernameKey, email, password_hash: passwordHash, game_state: gameState, friend_code: friendCode };
-    memory.users.set(id, user); memory.users.set(usernameKey, user);
-    return user;
-  }
-  const id = crypto.randomUUID();
-  const r = await pool.query('INSERT INTO users(id, username, username_key, email, password_hash, game_state, friend_code) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id, username, username_key, email, password_hash, game_state, friend_code', [id, username, usernameKey, email || null, passwordHash, JSON.stringify(gameState), friendCode]);
-  return r.rows[0];
-}
-async function updateUserState(userId, state) {
-  if (!hasDb()) {
-    const user = memory.users.get(userId); if (user) user.game_state = state;
-    return;
-  }
-  await pool.query('UPDATE users SET game_state=$2, updated_at=NOW() WHERE id=$1', [userId, JSON.stringify(state)]);
-}
-async function createSession(userId) {
-  const raw = randomToken();
-  const hash = tokenHash(raw);
-  const expires = new Date(Date.now() + SESSION_MAX_AGE);
-  if (!hasDb()) memory.sessions.set(hash, { userId, expiresAt: expires.getTime() });
-  else await pool.query('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)', [hash, userId, expires]);
-  return raw;
-}
-async function deleteSession(raw) {
-  const hash = tokenHash(raw);
-  if (!hasDb()) memory.sessions.delete(hash); else await pool.query('DELETE FROM sessions WHERE token_hash=$1', [hash]);
-}
-async function getSessionUser(req) {
-  const raw = getCookie(req, 'seal_session'); if (!raw) return null;
-  const hash = tokenHash(raw);
-  if (!hasDb()) {
-    const s = memory.sessions.get(hash); if (!s || s.expiresAt < Date.now()) return null;
-    return getUserById(s.userId);
-  }
-  const r = await pool.query('SELECT s.user_id, s.expires_at, u.id, u.username, u.username_key, u.email, u.password_hash, u.game_state, u.friend_code FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>NOW()', [hash]);
-  return r.rows[0] || null;
-}
-function publicUser(user) {
-  const state = cleanState(user.game_state, user.username);
-  return { id: user.id, username: user.username, email: user.email || '', friendCode: user.friend_code || '', state };
-}
-async function authRequired(req, res, next) {
-  try {
-    const user = await getSessionUser(req);
-    if (!user) return res.status(401).json({ error: 'Please sign in.' });
-    req.user = user; next();
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Authentication error.' }); }
-}
-
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const username = normalizeName(req.body?.username);
-    const usernameKey = username.toLowerCase();
-    const email = normalizeEmail(req.body?.email);
-    const password = String(req.body?.password || '');
-    if (!validName(username)) return res.status(400).json({ error: 'Name must be 3–18 characters using letters, numbers, spaces, _ or -.' });
-    if (!validPassword(password)) return res.status(400).json({ error: 'Password must be 8–128 characters.' });
-    if (email && !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email or leave it blank.' });
-    if (await getUserByNameKey(usernameKey)) return res.status(409).json({ error: 'That profile name is already registered.' });
-    const imported = req.body?.legacyState && typeof req.body.legacyState === 'object' ? cleanState(req.body.legacyState, username) : defaultState(username);
-    const friendCode = makeFriendCode();
-    const user = await insertUser({ username, usernameKey, email: email || null, passwordHash: hashPassword(password), gameState: imported, friendCode });
-    const token = await createSession(user.id); setSessionCookie(res, token);
-    res.json({ user: publicUser(user) });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Could not create account.' }); }
+const connected=new Map();
+io.use((socket,next)=>{try{const t=socket.handshake.headers.cookie?.match(/ss_token=([^;]+)/)?.[1]; const p=t&&jwt.verify(decodeURIComponent(t),JWT_SECRET); if(!p)return next(new Error('auth')); socket.userId=p.id;socket.username=p.username;next();}catch(e){next(new Error('auth'));}});
+io.on('connection',async(socket)=>{
+ const key=socket.username.toLowerCase(); presence.set(key,socket.id); connected.set(socket.id,socket);
+ io.emit('presence',{username:socket.username,online:true,count:presence.size});
+ socket.on('global:send',async(raw)=>{const message=String(raw||'').trim().slice(0,300);if(!message)return;const u=await getUser(socket.userId);const out={id:Date.now()+Math.random(),username:u.username,rank:rankName(Number(u.rating||0)),level:Number(u.level||1),message,online:true}; if(memoryMode)messages.push(out); else {const r=await q('INSERT INTO global_messages(user_id,message) VALUES($1,$2) RETURNING id,created_at',[u.id,message]);out.id=r.rows[0].id;out.createdAt=r.rows[0].created_at;}io.emit('global:new',out);});
+ socket.on('private:send',async({to,message})=>{message=String(message||'').trim().slice(0,300);to=String(to||'').trim();if(!message||!to)return;let receiver;if(memoryMode)receiver=[...users.values()].find(x=>x.username.toLowerCase()===to.toLowerCase());else{const r=await q('SELECT * FROM users WHERE LOWER(username)=LOWER($1)',[to]);receiver=r.rows[0];}if(!receiver)return;const u=await getUser(socket.userId);const out={id:Date.now()+Math.random(),from:u.username,to:receiver.username,message,rank:rankName(Number(u.rating||0)),online:true};if(memoryMode)messages.push({a:u.username,b:receiver.username,...out});else {const r=await q('INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id,created_at',[u.id,receiver.id,message]);out.id=r.rows[0].id;out.createdAt=r.rows[0].created_at;} socket.emit('private:new',out); for(const s of connected.values())if(s.username.toLowerCase()===receiver.username.toLowerCase())s.emit('private:new',out);});
+ socket.on('ranked:join',()=>{if(queue.find(x=>x.socketId===socket.id))return;const opponent=queue.shift();if(!opponent){queue.push({socketId:socket.id,userId:socket.userId,username:socket.username});socket.emit('ranked:searching');return;} const battleId='B'+Date.now()+Math.random().toString(36).slice(2,7); const room={id:battleId,players:[opponent.socketId,socket.id],scores:{[opponent.socketId]:0,[socket.id]:0},started:Date.now(),duration:30000};rooms.set(battleId,room);for(const sid of room.players)io.to(sid).emit('ranked:matched',{battleId,players:room.players.map(x=>({username:connected.get(x)?.username})) ,endsAt:room.started+room.duration}); setTimeout(()=>finishBattle(battleId),room.duration+500);});
+ socket.on('ranked:click',({battleId})=>{const room=rooms.get(battleId);if(room&&room.players.includes(socket.id)&&Date.now()<room.started+room.duration){room.scores[socket.id]++;io.to(room.players[0]).to(room.players[1]).emit('ranked:score',{scores:room.scores});}});
+ socket.on('friend:room',()=>{const code=Math.random().toString(36).slice(2,7).toUpperCase();rooms.set('F'+code,{id:'F'+code,owner:socket.id,players:[socket.id],friend:true});socket.emit('friend:code',code);});
+ socket.on('friend:join',(code)=>{code=String(code||'').toUpperCase();const room=rooms.get('F'+code);if(!room)return socket.emit('friend:error','Room not found.');if(room.players.length>=2)return socket.emit('friend:error','Room is full.');room.players.push(socket.id);for(const sid of room.players)io.to(sid).emit('friend:matched',{roomId:room.id,players:room.players.map(x=>({username:connected.get(x)?.username}))});});
+ socket.on('disconnect',()=>{if(presence.get(key)===socket.id)presence.delete(key);connected.delete(socket.id);for(let i=queue.length-1;i>=0;i--)if(queue[i].socketId===socket.id)queue.splice(i,1);io.emit('presence',{username:socket.username,online:false,count:presence.size});});
 });
-
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const usernameKey = normalizeName(req.body?.username).toLowerCase();
-    const password = String(req.body?.password || '');
-    const user = await getUserByNameKey(usernameKey);
-    if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error: 'Incorrect name or password.' });
-    const token = await createSession(user.id); setSessionCookie(res, token);
-    res.json({ user: publicUser(user) });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Could not sign in.' }); }
-});
-
-app.post('/api/auth/logout', async (req, res) => { try { const raw = getCookie(req, 'seal_session'); if (raw) await deleteSession(raw); clearSessionCookie(res); res.json({ ok: true }); } catch { res.json({ ok: true }); } });
-app.get('/api/me', authRequired, async (req, res) => res.json({ user: publicUser(req.user) }));
-app.put('/api/state', authRequired, async (req, res) => {
-  try {
-    const user = req.user; const state = cleanState(req.body?.state, user.username);
-    await updateUserState(user.id, state);
-    res.json({ ok: true, state });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Could not save progress.' }); }
-});
-async function getSocialSnapshot(userId) {
-  if (!hasDb()) {
-    const me = memory.users.get(userId);
-    const friends = [];
-    for (const [key,u] of memory.users.entries()) {
-      if (!u || key!==u.id) continue;
-      // fallback memory friendships stored on user object
-      if (me?.friends?.includes(u.id)) friends.push({id:u.id,name:u.username,online:isOnlineUser(u.id)});
-    }
-    return { friendCode: me?.friend_code || '', friends, requests: me?.friend_requests || [], global: (memory.chatGlobal || []).map(m => ({...m, rank:m.rank || rankFor((memory.users.get(m.senderId)?.game_state?.elo)||0).name, online:isOnlineUser(m.senderId)})), unread: {}, onlineCount: memory.activeSockets.size };
-  }
-  const meR = await pool.query('SELECT friend_code FROM users WHERE id=$1',[userId]);
-  const friendsR = await pool.query(`SELECT u.id,u.username FROM friendships f JOIN users u ON u.id=f.friend_id WHERE f.user_id=$1 ORDER BY lower(u.username)`,[userId]);
-  const reqR = await pool.query(`SELECT r.id,u.username,u.friend_code FROM friend_requests r JOIN users u ON u.id=r.from_user WHERE r.to_user=$1 AND r.status='pending' ORDER BY r.created_at DESC`,[userId]);
-  const globR = await pool.query(`SELECT m.id,m.body,m.created_at,m.sender_id,u.username,u.game_state FROM chat_messages m JOIN users u ON u.id=m.sender_id WHERE m.kind='global' ORDER BY m.created_at DESC LIMIT 60`);
-  return { friendCode: meR.rows[0]?.friend_code || '', friends: friendsR.rows.map(x=>({id:x.id,name:x.username,online:isOnlineUser(x.id)})), requests:reqR.rows, global:globR.rows.reverse().map(x=>({id:x.id,name:x.username,rank:rankFor(cleanState(x.game_state,x.username).elo).name,online:isOnlineUser(x.id),body:x.body,createdAt:x.created_at,senderId:x.sender_id})), unread:{}, onlineCount: memory.activeSockets.size };
-}
-
-app.get('/api/social', authRequired, async (req,res)=>{ try { res.json(await getSocialSnapshot(req.user.id)); } catch(e){ console.error(e); res.status(500).json({error:'Social data unavailable.'}); }});
-
-app.get('/api/social/private/:friendId', authRequired, async (req,res)=>{
-  try { const friendId=String(req.params.friendId||''); if(!friendId)return res.status(400).json({error:'Invalid friend.'});
-    const isFriend=hasDb()?await pool.query('SELECT 1 FROM friendships WHERE user_id=$1 AND friend_id=$2',[req.user.id,friendId]):{rowCount: memory.users.get(req.user.id)?.friends?.includes(friendId)?1:0};
-    if(!isFriend.rowCount)return res.status(403).json({error:'You can only message friends.'});
-    if(!hasDb()) return res.json({messages:(memory.chatPrivate?.[friendPairKey(req.user.id,friendId)]||[]).slice(-80)});
-    const r=await pool.query(`SELECT m.id,m.body,m.created_at,u.username,m.sender_id,u.game_state FROM chat_messages m JOIN users u ON u.id=m.sender_id WHERE m.kind='private' AND ((m.sender_id=$1 AND m.recipient_id=$2) OR (m.sender_id=$2 AND m.recipient_id=$1)) ORDER BY m.created_at ASC LIMIT 100`,[req.user.id,friendId]);
-    res.json({messages:r.rows.map(x=>({id:x.id,body:x.body,createdAt:x.created_at,name:x.username,senderId:x.sender_id,rank:rankFor(cleanState(x.game_state,x.username).elo).name,online:isOnlineUser(x.sender_id),friendId:x.sender_id===req.user.id?friendId:req.user.id}))});
-  } catch(e){ console.error(e); res.status(500).json({error:'Private chat unavailable.'}); }
-});
-
-app.get('/api/leaderboard', authRequired, async (_req, res) => {
-  try {
-    if (!hasDb()) {
-      const list = [...memory.users.values()].filter(u => u && u.username_key).map(u => { const s = cleanState(u.game_state, u.username); return { id: u.id, name: u.username, elo: s.elo, rank: rankFor(s.elo).name, clicks: s.totalClicks }; }).sort((a,b)=>b.elo-a.elo).slice(0,50);
-      return res.json({ players: list });
-    }
-    const r = await pool.query(`SELECT id, username, game_state FROM users ORDER BY ((game_state->>'elo')::int) DESC NULLS LAST LIMIT 50`);
-    const players = r.rows.map(u => { const s = cleanState(u.game_state, u.username); return { id:u.id, name:u.username, elo:s.elo, rank:rankFor(s.elo).name, clicks:s.totalClicks }; });
-    res.json({ players });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Leaderboard unavailable.' }); }
-});
-
-function makeCode() { const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let code=''; do code=Array.from({length:5},()=>chars[Math.floor(Math.random()*chars.length)]).join(''); while(memory.rooms.has(code)); return code; }
-function removeFromQueue(id){ const i=memory.queue.indexOf(id); if(i>=0) memory.queue.splice(i,1); }
-function makeRoom(a,b,ranked){ const id=`r_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; const room={id,players:[a,b],ranked,started:false,clicks:{[a.id]:0,[b.id]:0},endsAt:0}; memory.rooms.set(id,room); a.socket.join(id); b.socket.join(id); return room; }
-function pairRanked(){ while(memory.queue.length>=2){ const a=memory.players.get(memory.queue.shift()); const b=memory.players.get(memory.queue.shift()); if(!a||!b||a.socket.disconnected||b.socket.disconnected) continue; const room=makeRoom(a,b,true); a.socket.emit('match:found',{roomId:room.id,opponent:b.name,ranked:true}); b.socket.emit('match:found',{roomId:room.id,opponent:a.name,ranked:true}); setTimeout(()=>startRoom(room),1200); } }
-function startRoom(room){ if(!memory.rooms.has(room.id)||room.started||room.players.length!==2)return; room.started=true; room.endsAt=Date.now()+30000; io.to(room.id).emit('battle:start',{duration:30,endsAt:room.endsAt}); setTimeout(()=>finishRoom(room.id),30050); }
-async function savePlayer(player){ try { const state=cleanState(player.gameState, player.name); player.gameState=state; await updateUserState(player.userId,state); } catch(e){ console.error(e); } }
-function finishRoom(id){ const room=memory.rooms.get(id); if(!room)return; const [a,b]=room.players; const as=room.clicks[a.id]||0, bs=room.clicks[b.id]||0; let result='draw'; if(as!==bs) result=as>bs?a.id:b.id; const payload={result,scores:{[a.id]:as,[b.id]:bs}}; if(room.ranked&&result!=='draw'){ const winner=memory.players.get(result), loser=memory.players.get(result===a.id?b.id:a.id); if(winner){winner.gameState.elo=Math.min(1000000,winner.gameState.elo+25);winner.gameState.rankWins++;savePlayer(winner);} if(loser){loser.gameState.elo=Math.max(0,loser.gameState.elo-15);loser.gameState.rankLosses++;savePlayer(loser);} payload.elo={}; if(winner)payload.elo[winner.id]=25; if(loser)payload.elo[loser.id]=-15; } io.to(room.id).emit('battle:end',payload); setTimeout(()=>memory.rooms.delete(id),5000); }
-
-io.use(async (socket, next)=>{ try { const req=socket.request; const raw=getCookie(req,'seal_session'); if(!raw)return next(new Error('UNAUTHORIZED')); const hash=tokenHash(raw); let user=null; if(!hasDb()){ const s=memory.sessions.get(hash); if(!s||s.expiresAt<Date.now())return next(new Error('UNAUTHORIZED')); user=await getUserById(s.userId); } else { const r=await pool.query('SELECT u.id,u.username,u.game_state,u.friend_code FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>NOW()',[hash]); user=r.rows[0]||null; } if(!user)return next(new Error('UNAUTHORIZED')); socket.user=user; next(); } catch(e){ next(new Error('AUTH_ERROR')); } });
-
-io.on('connection', socket=>{
-  const user=socket.user; const stateObj=cleanState(user.game_state,user.username); const player={id:socket.id,userId:user.id,socket,name:user.username,gameState:stateObj};
-  const previous=memory.activeSockets.get(user.id); if(previous&&previous!==socket.id){ const old=memory.players.get(previous); if(old){ try{old.socket.emit('session:replaced');}catch{} old.socket.disconnect(true); memory.players.delete(previous); } }
-  memory.activeSockets.set(user.id,socket.id); memory.players.set(socket.id,player); socket.join(`user:${user.id}`); socket.join('global-chat');
-  socket.emit('profile:accepted',{name:player.name,rank:rankFor(stateObj.elo).name,elo:stateObj.elo,friendCode:user.friend_code||''});
-io.emit('presence:update',{onlineCount:memory.activeSockets.size});
-  getSocialSnapshot(user.id).then(data=>socket.emit('social:sync',data)).catch(()=>{});
-
-  socket.on('social:refresh',async()=>{ try{socket.emit('social:sync',await getSocialSnapshot(user.id));}catch{} });
-  socket.on('global:chat',async(raw)=>{ const body=cleanChat(raw?.body); if(!body)return; const now=new Date().toISOString(); const msg={name:player.name,senderId:user.id,rank:rankFor(player.gameState.elo).name,online:true,body,createdAt:now}; try{ if(hasDb()){ const r=await pool.query('INSERT INTO chat_messages(kind,sender_id,recipient_id,body) VALUES($1,$2,NULL,$3) RETURNING id,created_at',["global",user.id,body]); msg.id=r.rows[0].id; msg.createdAt=r.rows[0].created_at; } else { msg.id=Date.now()+Math.random(); memory.chatGlobal=(memory.chatGlobal||[]).concat(msg).slice(-60); } io.to('global-chat').emit('global:message',msg); }catch(e){ socket.emit('social:error','Message could not be sent.'); } });
-  socket.on('friend:request',async(raw)=>{ const code=String(raw?.code||raw||'').trim().toUpperCase(); if(!/^[A-Z0-9]{8}$/.test(code))return socket.emit('social:error','Enter an 8-character friend code.'); try{ let target=null; if(hasDb()){ const r=await pool.query('SELECT id,username,friend_code FROM users WHERE friend_code=$1',[code]); target=r.rows[0]||null; } else { target=[...memory.users.values()].find(u=>u&&u.id===u.id&&u.friend_code===code)||null; } if(!target)return socket.emit('social:error','Friend code not found.'); if(target.id===user.id)return socket.emit('social:error','You cannot add yourself.');
-      const already=hasDb()?await pool.query('SELECT 1 FROM friendships WHERE user_id=$1 AND friend_id=$2',[user.id,target.id]):{rowCount: memory.users.get(user.id)?.friends?.includes(target.id)?1:0}; if(already.rowCount)return socket.emit('social:error','You are already friends.');
-      if(hasDb()){ const pend=await pool.query(`SELECT id FROM friend_requests WHERE from_user=$1 AND to_user=$2 AND status='pending'`,[user.id,target.id]); if(!pend.rowCount)await pool.query('INSERT INTO friend_requests(id,from_user,to_user) VALUES($1,$2,$3)',[crypto.randomUUID(),user.id,target.id]); } else { const me=memory.users.get(user.id), to=memory.users.get(target.id); me.friend_requests=me.friend_requests||[]; if(!me.friend_requests.find(x=>x.to===target.id))me.friend_requests.push({from:user.id,to:target.id,name:target.username,code:user.friend_code,status:'pending'}); to.friend_requests=to.friend_requests||[]; to.friend_requests.push({from:user.id,to:target.id,name:user.username,code:user.friend_code,status:'pending'}); }
-      io.to(`user:${target.id}`).emit('friend:received',{name:user.username}); socket.emit('social:notice',`Invite sent to ${target.username}.`); socket.emit('social:sync',await getSocialSnapshot(user.id));
-    }catch(e){console.error(e);socket.emit('social:error','Could not send friend invite.');} });
-  socket.on('friend:accept',async(raw)=>{ const requestId=String(raw?.requestId||''); try{ if(hasDb()){ const r=await pool.query(`SELECT id,from_user,to_user FROM friend_requests WHERE id=$1 AND to_user=$2 AND status='pending'`,[requestId,user.id]); if(!r.rowCount)return socket.emit('social:error','Invite is no longer available.'); const from=r.rows[0].from_user; await pool.query('UPDATE friend_requests SET status=\'accepted\' WHERE id=$1',[requestId]); await pool.query('INSERT INTO friendships(user_id,friend_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[user.id,from]); await pool.query('INSERT INTO friendships(user_id,friend_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[from,user.id]); } else { const me=memory.users.get(user.id); const req=(me.friend_requests||[]).find(x=>x.to===user.id&&x.status==='pending'&&(requestId?x.id===requestId:true)); if(!req)return socket.emit('social:error','Invite is no longer available.'); const fromUser=memory.users.get(req.from); me.friends=me.friends||[]; fromUser.friends=fromUser.friends||[]; if(!me.friends.includes(from))me.friends.push(from); if(!fromUser.friends.includes(user.id))fromUser.friends.push(user.id); req.status='accepted'; }
-      socket.emit('social:sync',await getSocialSnapshot(user.id)); if(hasDb()){ const r=await pool.query('SELECT from_user FROM friend_requests WHERE id=$1',[requestId]); if(r.rowCount)io.to(`user:${r.rows[0].from_user}`).emit('social:refresh'); } }catch(e){console.error(e);socket.emit('social:error','Could not accept invite.');} });
-  socket.on('friend:remove',async(raw)=>{const friendId=String(raw?.friendId||'');try{if(hasDb()){await pool.query('DELETE FROM friendships WHERE (user_id=$1 AND friend_id=$2) OR (user_id=$2 AND friend_id=$1)',[user.id,friendId]);}else{for(const id of [user.id,friendId]){const u=memory.users.get(id);if(u?.friends)u.friends=u.friends.filter(x=>x!== (id===user.id?friendId:user.id));}}socket.emit('social:sync',await getSocialSnapshot(user.id));io.to(`user:${friendId}`).emit('social:refresh');}catch{}}
-  );
-  socket.on('private:chat',async(raw)=>{ const friendId=String(raw?.friendId||''); const body=cleanChat(raw?.body); if(!friendId||!body)return; try{ const allowed=hasDb()?await pool.query('SELECT 1 FROM friendships WHERE user_id=$1 AND friend_id=$2',[user.id,friendId]):{rowCount: memory.users.get(user.id)?.friends?.includes(friendId)?1:0}; if(!allowed.rowCount)return socket.emit('social:error','You can only message friends.'); const msg={name:player.name,body,createdAt:new Date().toISOString(),senderId:user.id,rank:rankFor(player.gameState.elo).name,online:true,friendId:friendId}; if(hasDb()){const r=await pool.query('INSERT INTO chat_messages(kind,sender_id,recipient_id,body) VALUES($1,$2,$3,$4) RETURNING id,created_at',["private",user.id,friendId,body]);msg.id=r.rows[0].id;msg.createdAt=r.rows[0].created_at;}else{const k=friendPairKey(user.id,friendId);memory.chatPrivate[k]=(memory.chatPrivate[k]||[]).concat({...msg,id:Date.now()+Math.random()}).slice(-100);msg.id=memory.chatPrivate[k].at(-1).id;}io.to(`user:${user.id}`).to(`user:${friendId}`).emit('private:message',{...msg,friendId}); }catch{socket.emit('social:error','Private message failed.');} });
-
-  socket.on('ranked:queue',()=>{ removeFromQueue(socket.id); memory.queue.push(socket.id); socket.emit('match:searching',{queued:true}); pairRanked(); });
-  socket.on('ranked:cancel',()=>removeFromQueue(socket.id));
-  socket.on('friend:create',()=>{ const code=makeCode(); memory.rooms.set(code,{id:code,players:[player],ranked:false,started:false,clicks:{[player.id]:0},endsAt:0}); socket.emit('friend:created',{code}); });
-  socket.on('friend:join',raw=>{ const code=String(raw||'').trim().toUpperCase(); const room=memory.rooms.get(code); if(!room||room.players.length!==1)return socket.emit('friend:error','Room not available.'); room.players.push(player); const [a,b]=room.players; const battle=makeRoom(a,b,false); memory.rooms.delete(code); a.socket.emit('match:found',{roomId:battle.id,opponent:b.name,ranked:false}); b.socket.emit('match:found',{roomId:battle.id,opponent:a.name,ranked:false}); setTimeout(()=>startRoom(battle),1200); });
-  socket.on('battle:click',roomId=>{ const room=memory.rooms.get(roomId); if(!room||!room.started||Date.now()>=room.endsAt||!room.players.some(p=>p.id===socket.id))return; room.clicks[socket.id]=(room.clicks[socket.id]||0)+1; io.to(roomId).emit('battle:score',{id:socket.id,score:room.clicks[socket.id]}); });
-  socket.on('player:stats', async payload=>{ if(!payload||typeof payload!=='object')return; player.gameState=cleanState({...player.gameState,...payload},player.name); await savePlayer(player); });
-  socket.on('disconnect',()=>{ removeFromQueue(socket.id); if(memory.activeSockets.get(user.id)===socket.id)memory.activeSockets.delete(user.id); memory.players.delete(socket.id); io.emit('presence:update',{onlineCount:memory.activeSockets.size}); for(const [id,room] of memory.rooms.entries()){if(room.players?.some(p=>p.id===socket.id)){if(room.started)io.to(id).emit('battle:cancelled',{reason:'Player disconnected.'});memory.rooms.delete(id);}} });
-});
-
-app.get('*',(_req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-
-initDb().then(()=>server.listen(PORT,()=>console.log(`SealSimulator running on port ${PORT}`))).catch(err=>{console.error('Database startup error',err);process.exit(1);});
+async function finishBattle(id){const r=rooms.get(id);if(!r||r.finished)return;r.finished=true;const a=r.players[0],b=r.players[1],sa=r.scores[a],sb=r.scores[b];let result='draw';if(sa>sb)result='a';else if(sb>sa)result='b'; for(const sid of r.players){const u=await getUser(connected.get(sid)?.userId);if(!u)continue;let delta=0;if(result==='draw')delta=0;else delta=sid===a?(result==='a'?25:-18):(result==='b'?25:-18);const updated=await saveProgress(u,{rating:Math.max(0,Number(u.rating||0)+delta),clicks:Number(u.clicks||0)+Number(r.scores[sid]||0),flops:Number(u.flops||0)+Math.max(0,Number(r.scores[sid]||0)*3)});io.to(sid).emit('ranked:finished',{result:result==='draw'?'draw':(result==='a'&&sid===a)||(result==='b'&&sid===b)?'win':'loss',myScore:r.scores[sid],opponentScore:r.scores[sid===a?b:a],delta,user:updated});}rooms.delete(id);}
+init().then(()=>server.listen(PORT,()=>console.log('SealSimulator listening on '+PORT)));
