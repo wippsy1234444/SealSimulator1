@@ -1,36 +1,37 @@
-# SealSimulator — Multiplayer Deployment
+# SealSimulator v6 — Accounts + Cloud Save + Multiplayer
 
-This package is the single-server version of SealSimulator.
+This version keeps the simple SealSimulator design but adds real accounts and server-side progress storage.
 
-It serves the website and multiplayer server from the same app, so one public URL can handle:
-- Seal clicking
-- Real-player ranked matchmaking
-- Friend room codes
-- Ranked battles
-- Online leaderboard
-- Socket.IO real-time battle scores
+## What changed
+- Register or sign in before entering the game.
+- Profile names are globally unique.
+- Passwords are hashed with Node's `crypto.scrypt` and never stored as plain text.
+- Sessions use an HttpOnly cookie.
+- Game progress is saved to the server/database so it can follow the player across devices.
+- One account can have one active game socket at a time; a newer sign-in replaces the older live session.
+- Ranked and friend battles remain real-player-only.
+- Global leaderboard reads saved player data.
 
-There are **no bots**. A ranked match only starts when two real connected players are paired.
+## Render setup — important
+For permanent accounts and progress, connect a Render Postgres database to this web service.
 
-## Run locally
+1. In Render, create a **Postgres** database.
+2. Create the web service from your GitHub `SealSimulator` repo.
+3. Build command: `npm install`
+4. Start command: `npm start`
+5. In the web service's **Environment** settings, add the database connection string as:
+   - Key: `DATABASE_URL`
+   - Value: use the Postgres database's **Internal Database URL** from Render.
+6. Recommended environment variable:
+   - `NODE_ENV=production`
 
-```bash
-npm install
-npm start
-```
+The server automatically creates its `users` and `sessions` tables on first startup.
 
-Open http://localhost:3000
+## Why the database is needed
+Render web-service storage is not a reliable place for permanent player saves. The game uses Postgres so account names, password hashes, and progress survive deployments/restarts.
 
-## Deploy as one URL on Render
+## Password recovery
+This version does not have email-based password reset yet. A forgotten password needs an admin/database reset. Email verification and self-service password reset can be added later.
 
-1. Create a new GitHub repository.
-2. Upload **everything in this folder** to the repository. `package.json` and `server.js` must be in the repository root.
-3. On Render, create a **Web Service** and connect the GitHub repository.
-4. Build command: `npm install`
-5. Start command: `npm start`
-6. Render will give you a public `.onrender.com` URL.
-7. Open that URL in your browser. The website and Socket.IO multiplayer are served from the same URL.
-
-## Important multiplayer notes
-
-The current leaderboard is held in server memory, so it is an online leaderboard for the currently connected players and resets when the server restarts. For permanent accounts, persistent global leaderboard data, and production matchmaking across server restarts, add a database such as Postgres and authentication.
+## Local development
+Without `DATABASE_URL`, the server runs with temporary in-memory auth/data for testing. That data disappears when the server restarts.

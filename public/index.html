@@ -1,99 +1,43 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SealSimulator</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css" />
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#ffffff">
+<title>SealSimulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <button class="brand" data-tab="play" aria-label="SealSimulator home"><span class="brand-dot"></span>SealSimulator</button>
-      <nav class="nav" aria-label="Main navigation">
-        <button class="nav-btn active" data-tab="play">Play</button>
-        <button class="nav-btn" data-tab="upgrades">Upgrades</button>
-        <button class="nav-btn" data-tab="cosmetics">Cosmetics</button>
-        <button class="nav-btn" data-tab="ranked">Ranked</button>
-        <button class="nav-btn" data-tab="profile">Profile</button>
-      </nav>
-      <div class="header-actions">
-        <div class="pill"><span>FLOPS</span><strong id="flops">0</strong></div>
-        <button class="icon-btn" id="soundToggle" title="Toggle sound">Sound</button>
-        <button class="icon-btn" id="musicToggle" title="Toggle music">Music</button>
-      </div>
-    </header>
-
-    <main>
-      <section class="view active" id="playView">
-        <div class="hero-copy">
-          <div class="eyebrow" id="levelLabel">LEVEL 1 SEAL</div>
-          <h1>CLICK THE SEAL</h1>
-          <p>Build your combo. Earn FLOPS. Evolve your seal.</p>
-        </div>
-        <div class="play-layout">
-          <aside class="side-card stats-card">
-            <span class="muted">Current run</span>
-            <div class="big-stat" id="runClicks">0</div>
-            <span class="muted">clicks</span>
-            <div class="stat-row"><span>Combo</span><strong id="combo">0</strong></div>
-            <div class="stat-row"><span>CPS</span><strong id="cps">0.0</strong></div>
-            <div class="stat-row"><span>Best combo</span><strong id="bestCombo">0</strong></div>
-          </aside>
-
-          <div class="seal-stage">
-            <div class="combo-pop" id="comboPop">+1</div>
-            <button class="seal-button" id="sealButton" aria-label="Click seal">
-              <div class="cosmetic-layer" id="cosmeticLayer"></div>
-              <img src="/assets/seal.png" alt="Seal" id="sealImage" draggable="false">
-            </button>
-            <div class="stage-caption">One click. One more FLOP.</div>
-          </div>
-
-          <aside class="side-card progress-card">
-            <span class="muted">Next seal</span>
-            <div class="evolve-name" id="nextSeal">Level 2</div>
-            <div class="bar"><span id="levelProgress"></span></div>
-            <div class="progress-copy"><span id="progressText">0 / 200 FLOPS</span><strong id="evolveCost">200</strong></div>
-            <button class="primary-btn" id="evolveBtn">Evolve Seal</button>
-          </aside>
-        </div>
-      </section>
-
-      <section class="view" id="upgradesView">
-        <div class="section-head"><div><div class="eyebrow">UPGRADE LAB</div><h2>Make every click matter.</h2></div><div class="pill"><span>FLOPS</span><strong id="flops2">0</strong></div></div>
-        <div class="upgrade-grid" id="upgradeGrid"></div>
-      </section>
-
-      <section class="view" id="cosmeticsView">
-        <div class="section-head"><div><div class="eyebrow">CUSTOMIZATION</div><h2>Keep the seal simple. Keep the style yours.</h2></div></div>
-        <div class="cosmetics-layout"><div class="cosmetic-preview card"><div class="preview-label">PREVIEW</div><div class="preview-stage"><div class="preview-seal"><div class="cosmetic-layer" id="previewCosmeticLayer"></div><img src="/assets/seal.png" alt="Seal preview"></div></div></div><div class="cosmetic-list" id="cosmeticList"></div></div>
-      </section>
-
-      <section class="view" id="rankedView">
-        <div class="section-head"><div><div class="eyebrow">REAL PLAYER COMPETITION</div><h2>Ranked battles.</h2></div><div class="rank-badge" id="rankBadge">BRONZE</div></div>
-        <div class="ranked-grid">
-          <div class="card ranked-card"><div class="rank-icon" id="rankIcon">B</div><div><div class="muted">Your rank</div><h3 id="rankName">Bronze</h3><p id="rankElo">0 rating</p></div><button class="primary-btn wide" id="rankQueueBtn">Find real player</button><button class="ghost-btn wide" id="rankCancelBtn" hidden>Cancel search</button><div class="search-state" id="searchState">No bots. No practice queue. Only real connected players.</div></div>
-          <div class="card friend-card"><div class="muted">Private battle</div><h3>Play with a friend</h3><p>Create a private room or join one using a five-character code.</p><div class="friend-actions"><button class="secondary-btn" id="createRoomBtn">Create room</button><div class="join-row"><input id="roomCode" maxlength="5" placeholder="CODE"><button class="secondary-btn" id="joinRoomBtn">Join</button></div></div><div class="room-code" id="createdCode" hidden></div></div>
-        </div>
-        <div class="card leaderboard-card"><div class="section-head compact"><div><div class="eyebrow">LIVE</div><h3>Leaderboard</h3></div><button class="ghost-btn" id="refreshLeaderboard">Refresh</button></div><div id="leaderboardRows" class="leaderboard-rows"><div class="empty">Connect to the server to see live players.</div></div></div>
-      </section>
-
-      <section class="view" id="profileView">
-        <div class="section-head"><div><div class="eyebrow">PROFILE</div><h2>Your seal record.</h2></div></div>
-        <div class="profile-grid"><div class="card profile-main"><label for="playerName">Player name</label><input id="playerName" maxlength="18" placeholder="Your name"><button class="primary-btn" id="saveNameBtn">Save profile</button></div><div class="card record-card"><div><span class="muted">All-time clicks</span><strong id="totalClicks">0</strong></div><div><span class="muted">Best CPS</span><strong id="bestCps">0.0</strong></div><div><span class="muted">Rank wins</span><strong id="rankWins">0</strong></div></div></div>
-      </section>
-    </main>
+<div id="authScreen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">SealSimulator</div>
+    <div class="auth-seal"><img src="/assets/seal.png" alt="Seal"></div>
+    <h1 id="authTitle">Welcome back.</h1>
+    <p class="auth-sub" id="authSub">Sign in to keep your seal progress safe across devices.</p>
+    <div class="auth-tabs"><button class="auth-tab active" id="loginTab">Sign in</button><button class="auth-tab" id="registerTab">Register</button></div>
+    <form id="authForm" class="auth-form">
+      <label>Profile name<input id="authUsername" maxlength="18" autocomplete="username" placeholder="Your profile name" required></label>
+      <label id="emailField" hidden>Email <span class="optional">optional</span><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></label>
+      <label>Password<input id="authPassword" type="password" minlength="8" autocomplete="current-password" placeholder="At least 8 characters" required></label>
+      <label id="confirmField" hidden>Confirm password<input id="authConfirm" type="password" minlength="8" autocomplete="new-password" placeholder="Repeat your password"></label>
+      <button class="big-btn auth-submit" id="authSubmit" type="submit">Sign in</button>
+      <div class="auth-error" id="authError"></div>
+    </form>
+    <p class="auth-note">Your password is stored as a secure one-way hash. It is never saved as plain text.</p>
   </div>
+</div>
 
-  <div class="battle-modal" id="battleModal" hidden>
-    <div class="battle-backdrop"></div><div class="battle-panel card"><div class="battle-top"><div><div class="eyebrow" id="battleMode">RANKED BATTLE</div><h2 id="opponentName">Opponent</h2></div><div class="timer" id="battleTimer">30.0</div></div><div class="versus"><div class="battle-score"><span id="youName">You</span><strong id="youScore">0</strong></div><div class="vs">VS</div><div class="battle-score"><span id="enemyName">Opponent</span><strong id="enemyScore">0</strong></div></div><button class="battle-seal" id="battleSeal"><img src="/assets/seal.png" alt="Seal"></button><div class="battle-tip">Click your seal as fast as you can.</div></div>
-  </div>
-  <div class="toast" id="toast"></div>
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js"></script>
-</body>
-</html>
+<div id="gameShell" hidden>
+<header class="topbar"><button class="brand" data-tab="play">SealSimulator</button><nav class="nav"><button class="nav-btn active" data-tab="play">Play</button><button class="nav-btn" data-tab="upgrades">Upgrades</button><button class="nav-btn" data-tab="cosmetics">Style</button><button class="nav-btn" data-tab="ranked">Ranked</button><button class="nav-btn" data-tab="profile">Profile</button></nav><div class="header-right"><div class="flop-pill"><span>FLOPS</span><strong id="flops">0</strong></div><button class="small-btn" id="soundToggle">Sound</button><button class="small-btn" id="musicToggle">Music</button></div></header>
+<main>
+<section class="view active" id="playView"><div class="topline"><div><div class="label" id="levelLabel">LEVEL 1 SEAL</div><h1>Click the seal.</h1><p class="sub">Simple. Satisfying. Addictive.</p></div><div class="streak-card"><span>DAILY STREAK</span><strong id="streak">0 days</strong><small id="streakReward">Come back tomorrow</small></div></div><div class="play-grid"><div class="stats-box"><div><span>Clicks</span><strong id="runClicks">0</strong></div><div><span>Combo</span><strong id="combo">0</strong></div><div><span>CPS</span><strong id="cps">0.0</strong></div><div><span>Best</span><strong id="bestCombo">0</strong></div></div><div class="seal-zone"><div class="combo-pop" id="comboPop">+1</div><button id="sealButton" class="seal-button" aria-label="Click the seal"><img src="/assets/seal.png" id="sealImage" alt="Seal"></button><div class="click-hint">CLICK</div></div><div class="next-box"><span>NEXT SEAL</span><strong id="nextSeal">Level 2</strong><div class="progress"><span id="levelProgress"></span></div><div class="between"><small id="progressText">0 / 200 FLOPS</small><small id="evolveCost">200</small></div><button class="big-btn" id="evolveBtn">Evolve</button></div></div><div class="mission-row"><div class="card mission"><span>DAILY MISSION</span><strong id="missionText">Click 100 times</strong><small id="missionProgress">0 / 100</small><div class="tiny-progress"><span id="missionBar"></span></div></div><div class="card mission"><span>WEEKLY</span><strong id="weeklyText">Win 3 ranked battles</strong><small id="weeklyProgress">0 / 3</small><div class="tiny-progress"><span id="weeklyBar"></span></div></div><div class="card mission"><span>TITLE</span><strong id="titleName">Seal Rookie</strong><small id="titleDesc">Your current title</small></div></div></section>
+<section class="view" id="upgradesView"><div class="page-head"><div><div class="label">UPGRADES</div><h2>Make clicks stronger.</h2></div><div class="page-flops"><span>FLOPS</span><strong id="flops2">0</strong></div></div><div class="upgrade-grid" id="upgradeGrid"></div><div class="prestige-card card"><div><div class="label">PRESTIGE</div><h3>Reset for a permanent boost.</h3><p>Reach Seal Level 6 to prestige. Your upgrades reset, but you keep cosmetics and rank.</p></div><div class="prestige-right"><strong id="prestigeLevel">0</strong><span>prestiges</span><button class="big-btn" id="prestigeBtn">Prestige</button></div></div></section>
+<section class="view" id="cosmeticsView"><div class="page-head"><div><div class="label">STYLE</div><h2>Small changes. Big personality.</h2></div></div><div class="style-layout"><div class="card preview-card"><span>PREVIEW</span><div class="style-preview"><div id="previewCosmeticLayer"></div><img src="/assets/seal.png" alt="Seal preview"></div><strong id="collectionCount">1 / 11 owned</strong></div><div><div class="style-tabs"><button class="style-tab active" data-style-type="All">All</button><button class="style-tab" data-style-type="Hat">Hats</button><button class="style-tab" data-style-type="Shoes">Shoes</button><button class="style-tab" data-style-type="Variant">Variants</button></div><div class="cosmetic-grid" id="cosmeticList"></div></div></div></section>
+<section class="view" id="rankedView"><div class="page-head"><div><div class="label">RANKED</div><h2>Real players only.</h2><p class="sub">No bots. No fake opponents.</p></div><div class="rank-big" id="rankBig">BRONZE</div></div><div class="rank-grid"><div class="card rank-main"><div class="rank-circle" id="rankCircle">B</div><h3 id="rankName">Bronze</h3><strong id="rankElo">0 rating</strong><div class="progress"><span id="rankProgress"></span></div><small id="rankProgressCopy">0 / 100</small><button class="big-btn" id="rankQueueBtn">Find real player</button><button class="big-btn light" id="rankCancelBtn" hidden>Cancel</button><div class="search-state" id="searchState">You only play against another connected person.</div></div><div class="card friend-main"><span>FRIEND BATTLE</span><h3>Fight a friend.</h3><button class="big-btn" id="createRoomBtn">Create room</button><div class="room-created" id="createdCode" hidden></div><div class="join"><input id="roomCode" maxlength="5" placeholder="CODE"><button class="big-btn" id="joinRoomBtn">Join</button></div></div></div><div class="card leaderboard"><div class="leader-head"><div><span>GLOBAL</span><h3>Leaderboard</h3></div><button class="small-btn" id="refreshLeaderboard">Refresh</button></div><div id="leaderboardRows"></div></div></section>
+<section class="view" id="profileView"><div class="page-head"><div><div class="label">PROFILE</div><h2 id="profileHeadline">Your seal record.</h2></div><button class="big-btn light" id="logoutBtn">Sign out</button></div><div class="profile-grid"><div class="card profile-card"><label>Profile name</label><input id="playerName" maxlength="18" readonly><small>Your profile name is protected by your account password.</small><div class="profile-title-row"><span>Title</span><strong id="profileTitle">Seal Rookie</strong></div></div><div class="card records"><div><span>ALL-TIME CLICKS</span><strong id="totalClicks">0</strong></div><div><span>BEST CPS</span><strong id="bestCps">0.0</strong></div><div><span>RANK WINS</span><strong id="rankWins">0</strong></div><div><span>PRESTIGE</span><strong id="profilePrestige">0</strong></div><div><span>SEASON</span><strong id="seasonInfo">Season 1</strong></div></div></div><div class="card history-card"><div class="leader-head"><div><span>RECENT</span><h3>Match history</h3></div></div><div id="historyList" class="history-list"></div></div></section>
+</main>
+<div class="battle-modal" id="battleModal" hidden><div class="battle-panel"><div class="battle-head"><div><span id="battleMode">RANKED BATTLE</span><h2 id="opponentName">Opponent</h2></div><div class="timer" id="battleTimer">30.0</div></div><div class="battle-score-row"><div><span id="youName">You</span><strong id="youScore">0</strong></div><b>VS</b><div><span id="enemyName">Opponent</span><strong id="enemyScore">0</strong></div></div><button class="battle-seal" id="battleSeal"><img src="/assets/seal.png" alt="Seal"></button><p>Click as fast as you can.</p></div></div>
+<div class="toast" id="toast"></div>
+</div>
+<script src="/socket.io/socket.io.js"></script><script src="/app.js"></script>
+</body></html>

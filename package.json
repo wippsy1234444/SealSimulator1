@@ -1,15 +1,13 @@
 {
   "name": "sealsimulator",
-  "version": "3.0.0",
+  "version": "6.0.0",
   "private": true,
-  "description": "SealSimulator — clean seal clicking game with real-player ranked battles.",
+  "description": "SealSimulator with account authentication, cloud progress, and real-player multiplayer.",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
+  "scripts": { "start": "node server.js", "dev": "node server.js" },
   "dependencies": {
     "express": "^4.21.2",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "pg": "^8.16.3"
   }
 }
