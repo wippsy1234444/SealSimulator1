@@ -1,37 +1,26 @@
-# SealSimulator v6 — Accounts + Cloud Save + Multiplayer
+# SealSimulator v7
 
-This version keeps the simple SealSimulator design but adds real accounts and server-side progress storage.
+A simple white UI seal clicker with accounts, persistent progress, real-player ranked battles, friend room codes, a global live chat, friend invites, and private friend-to-friend messages.
 
-## What changed
-- Register or sign in before entering the game.
-- Profile names are globally unique.
-- Passwords are hashed with Node's `crypto.scrypt` and never stored as plain text.
-- Sessions use an HttpOnly cookie.
-- Game progress is saved to the server/database so it can follow the player across devices.
-- One account can have one active game socket at a time; a newer sign-in replaces the older live session.
-- Ranked and friend battles remain real-player-only.
-- Global leaderboard reads saved player data.
+## Render
+Build command: `npm install`
+Start command: `npm start`
 
-## Render setup — important
-For permanent accounts and progress, connect a Render Postgres database to this web service.
+Set `DATABASE_URL` to your Render Postgres Internal Database URL. The server creates the required social tables on startup.
 
-1. In Render, create a **Postgres** database.
-2. Create the web service from your GitHub `SealSimulator` repo.
-3. Build command: `npm install`
-4. Start command: `npm start`
-5. In the web service's **Environment** settings, add the database connection string as:
-   - Key: `DATABASE_URL`
-   - Value: use the Postgres database's **Internal Database URL** from Render.
-6. Recommended environment variable:
-   - `NODE_ENV=production`
+## Social features
+- Global community chat for all signed-in players.
+- Unique 8-character friend codes that can be copied and shared.
+- Friend requests with accept flow.
+- Online/offline friend status.
+- Persistent private messages between friends.
+- Real-time Socket.IO message delivery.
 
-The server automatically creates its `users` and `sessions` tables on first startup.
+No bot opponents are used for ranked matchmaking.
 
-## Why the database is needed
-Render web-service storage is not a reliable place for permanent player saves. The game uses Postgres so account names, password hashes, and progress survive deployments/restarts.
 
-## Password recovery
-This version does not have email-based password reset yet. A forgotten password needs an admin/database reset. Email verification and self-service password reset can be added later.
-
-## Local development
-Without `DATABASE_URL`, the server runs with temporary in-memory auth/data for testing. That data disappears when the server restarts.
+## v8 Social presence update
+- Global and private chat messages show the sender's current rank.
+- Online/offline presence is shown with a dot and status text.
+- The Chat header shows the live number of connected players.
+- Presence updates are broadcast immediately when players connect or disconnect.
